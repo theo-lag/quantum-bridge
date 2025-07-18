@@ -308,3 +308,74 @@
     (ok true)
   )
 )
+
+;; Finalizes unilateral channel closure after challenge period
+(define-public (resolve-unilateral-close
+    (channel-id (buff 32))
+    (participant-b principal)
+  )
+  (let (
+      (channel (unwrap!
+        (map-get? payment-channels {
+          channel-id: channel-id,
+          participant-a: tx-sender,
+          participant-b: participant-b,
+        })
+        ERR-CHANNEL-NOT-FOUND
+      ))
+      (proposed-balance-a (get balance-a channel))
+      (proposed-balance-b (get balance-b channel))
+    )
+    ;; Final validation checks
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+    ;; Verify challenge period expiration
+    (asserts! (>= stacks-block-height (get dispute-deadline channel))
+      ERR-DISPUTE-PERIOD
+    )
+    ;; Execute final fund distribution
+    (try! (as-contract (stx-transfer? proposed-balance-a tx-sender tx-sender)))
+    (try! (as-contract (stx-transfer? proposed-balance-b tx-sender participant-b)))
+    ;; Complete channel lifecycle closure
+    (map-set payment-channels {
+      channel-id: channel-id,
+      participant-a: tx-sender,
+      participant-b: participant-b,
+    }
+      (merge channel {
+        is-open: false,
+        balance-a: u0,
+        balance-b: u0,
+        total-deposited: u0,
+      })
+    )
+    (ok true)
+  )
+)
+
+;; QUERY & ADMINISTRATIVE FUNCTIONS
+
+;; Retrieves comprehensive channel state information
+(define-read-only (get-channel-info
+    (channel-id (buff 32))
+    (participant-a principal)
+    (participant-b principal)
+  )
+  (map-get? payment-channels {
+    channel-id: channel-id,
+    participant-a: participant-a,
+    participant-b: participant-b,
+  })
+)
+
+;; Emergency fund recovery mechanism (governance-controlled)
+;; Critical security function for protocol maintenance
+(define-public (emergency-withdraw)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (try! (stx-transfer? (stx-get-balance (as-contract tx-sender))
+      (as-contract tx-sender) CONTRACT-OWNER
+    ))
+    (ok true)
+  )
+)
