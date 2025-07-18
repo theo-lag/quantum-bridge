@@ -109,3 +109,110 @@
     false
   )
 )
+
+;; CORE CHANNEL MANAGEMENT FUNCTIONS
+
+;; Initializes a new payment channel between two participants
+(define-public (create-channel
+    (channel-id (buff 32))
+    (participant-b principal)
+    (initial-deposit uint)
+  )
+  (begin
+    ;; Comprehensive input validation
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-deposit initial-deposit) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+    ;; Verify channel uniqueness constraint
+    (asserts!
+      (is-none (map-get? payment-channels {
+        channel-id: channel-id,
+        participant-a: tx-sender,
+        participant-b: participant-b,
+      }))
+      ERR-CHANNEL-EXISTS
+    )
+    ;; Execute atomic fund transfer to contract escrow
+    (try! (stx-transfer? initial-deposit tx-sender (as-contract tx-sender)))
+    ;; Initialize channel state with creator's deposit
+    (map-set payment-channels {
+      channel-id: channel-id,
+      participant-a: tx-sender,
+      participant-b: participant-b,
+    } {
+      total-deposited: initial-deposit,
+      balance-a: initial-deposit,
+      balance-b: u0,
+      is-open: true,
+      dispute-deadline: u0,
+      nonce: u0,
+    })
+    (ok true)
+  )
+)
+
+;; Adds additional liquidity to an existing payment channel
+(define-public (fund-channel
+    (channel-id (buff 32))
+    (participant-b principal)
+    (additional-funds uint)
+  )
+  (let ((channel (unwrap!
+      (map-get? payment-channels {
+        channel-id: channel-id,
+        participant-a: tx-sender,
+        participant-b: participant-b,
+      })
+      ERR-CHANNEL-NOT-FOUND
+    )))
+    ;; Input validation and security checks
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-deposit additional-funds) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+    ;; Verify channel operational status
+    (asserts! (get is-open channel) ERR-CHANNEL-CLOSED)
+    ;; Execute incremental funding transfer
+    (try! (stx-transfer? additional-funds tx-sender (as-contract tx-sender)))
+    ;; Update channel state with new liquidity allocation
+    (map-set payment-channels {
+      channel-id: channel-id,
+      participant-a: tx-sender,
+      participant-b: participant-b,
+    }
+      (merge channel {
+        total-deposited: (+ (get total-deposited channel) additional-funds),
+        balance-a: (+ (get balance-a channel) additional-funds),
+      })
+    )
+    (ok true)
+  )
+)
+
+;; CHANNEL CLOSURE MECHANISMS
+
+;; Executes cooperative channel closure with mutual consent
+(define-public (close-channel-cooperative
+    (channel-id (buff 32))
+    (participant-b principal)
+    (balance-a uint)
+    (balance-b uint)
+    (signature-a (buff 65))
+    (signature-b (buff 65))
+  )
+  (let (
+      (channel (unwrap!
+        (map-get? payment-channels {
+          channel-id: channel-id,
+          participant-a: tx-sender,
+          participant-b: participant-b,
+        })
+        ERR-CHANNEL-NOT-FOUND
+      ))
+      (total-channel-funds (get total-deposited channel))
+      ;; Construct verification message for signature validation
+      (message (concat (concat channel-id (uint-to-buff balance-a))
+        (uint-to-buff balance-b)
+      ))
+    )
+    ;; Comprehensive validation suite
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
